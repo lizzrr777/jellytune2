@@ -22,11 +22,12 @@ FetchContent_Declare(JUCE
 FetchContent_MakeAvailable(JUCE)
 
 juce_add_plugin(JellyTune
-    COMPANY_NAME "Jelly"
-    PLUGIN_MANUFACTURER_CODE Jlly
+    COMPANY_NAME "lizzrr"
+    BUNDLE_ID com.lizzrr.jellytune
+    PLUGIN_MANUFACTURER_CODE Lzzr
     PLUGIN_CODE Jtun
     FORMATS VST3
-    PRODUCT_NAME "JellyTune"
+    PRODUCT_NAME "JellyTune by lizzrr"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE

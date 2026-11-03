@@ -72,9 +72,11 @@ JellyTuneEditor::JellyTuneEditor (JellyTuneProcessor& p)
 
     logo = juce::ImageCache::getFromMemory (BinaryData::logo_png, BinaryData::logo_pngSize);
 
-    setupKnob (retune,  "retune",   "RETUNE SPEED", " ms");
-    setupKnob (vibRate, "vibRate",  "RATE",         " Hz");
-    setupKnob (vibDepth, "vibDepth", "DEPTH",       " ct");
+    setupKnob (retune,   "retune",   "RETUNE SPEED", " ms");
+    setupKnob (tuning,   "tuning",   "TUNING (A4)",  " Hz");
+    setupKnob (formant,  "formant",  "FORMANT",      " st");
+    setupKnob (vibRate,  "vibRate",  "RATE",         " Hz");
+    setupKnob (vibDepth, "vibDepth", "DEPTH",        " ct");
 
     keyBox.addItemList ({ "C", "D", "E", "F", "G", "A", "B" }, 1);
     keyBox.setJustificationType (juce::Justification::centred);
@@ -84,6 +86,10 @@ JellyTuneEditor::JellyTuneEditor (JellyTuneProcessor& p)
     scaleBox.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (scaleBox);
 
+    rangeBox.addItemList ({ "Low (27 ms)", "Mid (19 ms)", "High (14 ms)" }, 1);
+    rangeBox.setJustificationType (juce::Justification::centred);
+    addAndMakeVisible (rangeBox);
+
     sharpBtn.setClickingTogglesState (true);
     addAndMakeVisible (sharpBtn);
 
@@ -92,13 +98,15 @@ JellyTuneEditor::JellyTuneEditor (JellyTuneProcessor& p)
 
     setupCaption (keyLabel, "KEY");
     setupCaption (scaleLabel, "SCALE");
+    setupCaption (rangeLabel, "VOICE");
 
     keyAtt   = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "key", keyBox);
     scaleAtt = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "scale", scaleBox);
+    rangeAtt = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "range", rangeBox);
     sharpAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "sharp", sharpBtn);
     vibAtt   = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "vibrato", vibBtn);
 
-    setSize (600, 430);
+    setSize (700, 450);
 }
 
 JellyTuneEditor::~JellyTuneEditor()
@@ -152,15 +160,15 @@ void JellyTuneEditor::paint (juce::Graphics& g)
     g.setFont (juce::FontOptions (32.0f, juce::Font::bold));
     g.drawText ("JELLYTUNE", 100, 14, 320, 38, juce::Justification::centredLeft);
 
-    g.setColour (JellyLookAndFeel::dimText);
-    g.setFont (juce::FontOptions (12.0f));
-    g.drawText ("VOCAL PITCH CORRECTION", 102, 50, 320, 18, juce::Justification::centredLeft);
+    g.setColour (JellyLookAndFeel::accent);
+    g.setFont (juce::FontOptions (16.0f, juce::Font::bold));
+    g.drawText ("by lizzrr", 103, 50, 320, 20, juce::Justification::centredLeft);
 
     g.setColour (JellyLookAndFeel::accent);
     g.fillRect (0, 88, getWidth(), 2);
 
     // paneles
-    for (auto r : { keyPanel, retunePanel, vibPanel })
+    for (auto r : { keyPanel, pitchPanel, vibPanel })
     {
         g.setColour (JellyLookAndFeel::panel);
         g.fillRoundedRectangle (r.toFloat(), 10.0f);
@@ -178,24 +186,35 @@ void JellyTuneEditor::resized()
     keyPanel = area.removeFromTop (64);
     area.removeFromTop (12);
 
-    retunePanel = area.removeFromLeft (area.getWidth() * 45 / 100);
+    pitchPanel = area.removeFromLeft (area.getWidth() * 60 / 100);
     area.removeFromLeft (12);
     vibPanel = area;
 
-    // fila: tonalidad + sharp + escala
+    // fila: tonalidad + sharp + escala + rango de voz
     {
         auto r = keyPanel.reduced (14, 15);
-        keyLabel.setBounds (r.removeFromLeft (40));
-        keyBox.setBounds (r.removeFromLeft (80));
-        r.removeFromLeft (14);
-        sharpBtn.setBounds (r.removeFromLeft (110));
-        r.removeFromLeft (34);
-        scaleLabel.setBounds (r.removeFromLeft (56));
-        scaleBox.setBounds (r.removeFromLeft (150));
+        keyLabel.setBounds (r.removeFromLeft (36));
+        keyBox.setBounds (r.removeFromLeft (64));
+        r.removeFromLeft (8);
+        sharpBtn.setBounds (r.removeFromLeft (100));
+        r.removeFromLeft (22);
+        scaleLabel.setBounds (r.removeFromLeft (50));
+        scaleBox.setBounds (r.removeFromLeft (118));
+        r.removeFromLeft (22);
+        rangeLabel.setBounds (r.removeFromLeft (54));
+        rangeBox.setBounds (r.removeFromLeft (112));
     }
 
-    placeKnob (retune, retunePanel.reduced (10));
+    // panel de tono: retune + afinacion de referencia + formante
+    {
+        auto r = pitchPanel.reduced (10);
+        const int third = r.getWidth() / 3;
+        placeKnob (retune, r.removeFromLeft (third));
+        placeKnob (tuning, r.removeFromLeft (third));
+        placeKnob (formant, r);
+    }
 
+    // panel de vibrato
     {
         auto r = vibPanel.reduced (14, 12);
         vibBtn.setBounds (r.removeFromTop (34));

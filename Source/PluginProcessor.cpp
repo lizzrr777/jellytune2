@@ -14,6 +14,9 @@ JellyTuneProcessor::JellyTuneProcessor()
     vibratoParam  = apvts.getRawParameterValue ("vibrato");
     vibRateParam  = apvts.getRawParameterValue ("vibRate");
     vibDepthParam = apvts.getRawParameterValue ("vibDepth");
+    tuningParam   = apvts.getRawParameterValue ("tuning");
+    formantParam  = apvts.getRawParameterValue ("formant");
+    rangeParam    = apvts.getRawParameterValue ("range");
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout JellyTuneProcessor::createLayout()
@@ -44,13 +47,44 @@ juce::AudioProcessorValueTreeState::ParameterLayout JellyTuneProcessor::createLa
     layout.add (std::make_unique<P> (juce::ParameterID { "vibDepth", 1 }, "Vibrato Depth",
                                      R (0.0f, 100.0f, 1.0f), 35.0f, A().withLabel ("cents")));
 
+    // Afinacion de referencia (A4), como en Waves Tune / Antares. 440 Hz por defecto.
+    layout.add (std::make_unique<P> (juce::ParameterID { "tuning", 1 }, "Tuning (A4)",
+                                     R (400.0f, 480.0f, 0.1f), 440.0f, A().withLabel ("Hz")));
+
+    // Formante: cambia el timbre de la voz (mas grave/aguda) sin cambiar la nota
+    layout.add (std::make_unique<P> (juce::ParameterID { "formant", 1 }, "Formant",
+                                     R (-jelly::kFormantMax, jelly::kFormantMax, 0.1f), 0.0f, A().withLabel ("st")));
+
+    // Rango de voz = latencia: cuanto mas aguda la voz, menos latencia
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "range", 1 }, "Voice Range",
+                                     juce::StringArray { "Low (27 ms)", "Mid (19 ms)", "High (14 ms)" }, 1));
+
     return layout;
 }
 
 void JellyTuneProcessor::prepareToPlay (double sampleRate, int)
 {
     dsp.prepare (sampleRate, juce::jmax (1, getTotalNumInputChannels()));
+    dsp.setSettings (readSettings());
     setLatencySamples (dsp.getLatencySamples());
+}
+
+jelly::JellyTuneDSP::Settings JellyTuneProcessor::readSettings() const
+{
+    static const int naturalPc[7] = { 0, 2, 4, 5, 7, 9, 11 }; // C D E F G A B
+    const int keyIndex = juce::jlimit (0, 6, (int) std::lround (keyParam->load()));
+
+    jelly::JellyTuneDSP::Settings s;
+    s.retuneMs      = retuneParam->load();
+    s.rootPc        = (naturalPc[keyIndex] + (sharpParam->load() > 0.5f ? 1 : 0)) % 12;
+    s.scale         = juce::jlimit (0, 2, (int) std::lround (scaleParam->load()));
+    s.vibrato       = vibratoParam->load() > 0.5f;
+    s.vibRateHz     = vibRateParam->load();
+    s.vibDepthCents = vibDepthParam->load();
+    s.tuningHz      = tuningParam->load();
+    s.formantSemis  = formantParam->load();
+    s.voiceRange    = juce::jlimit (0, 2, (int) std::lround (rangeParam->load()));
+    return s;
 }
 
 bool JellyTuneProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -72,17 +106,9 @@ void JellyTuneProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     for (int ch = numIn; ch < numOut; ++ch)
         buffer.clear (ch, 0, numSamples);
 
-    static const int naturalPc[7] = { 0, 2, 4, 5, 7, 9, 11 }; // C D E F G A B
-    const int keyIndex = juce::jlimit (0, 6, (int) std::lround (keyParam->load()));
-
-    jelly::JellyTuneDSP::Settings s;
-    s.retuneMs      = retuneParam->load();
-    s.rootPc        = (naturalPc[keyIndex] + (sharpParam->load() > 0.5f ? 1 : 0)) % 12;
-    s.scale         = juce::jlimit (0, 2, (int) std::lround (scaleParam->load()));
-    s.vibrato       = vibratoParam->load() > 0.5f;
-    s.vibRateHz     = vibRateParam->load();
-    s.vibDepthCents = vibDepthParam->load();
-    dsp.setSettings (s);
+    dsp.setSettings (readSettings());
+    if (getLatencySamples() != dsp.getLatencySamples())
+        setLatencySamples (dsp.getLatencySamples()); // cambio de rango de voz
 
     dsp.process (buffer.getArrayOfWritePointers(), juce::jmin (numIn, 2), numSamples);
 }

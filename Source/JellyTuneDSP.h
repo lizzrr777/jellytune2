@@ -1,5 +1,6 @@
 // JellyTuneDSP.h
 // Motor de autotune: deteccion de pitch (YIN) + correccion con PSOLA.
+// Incluye: afinacion de referencia (A4), formante y rango de voz (latencia).
 // Codigo C++ puro (sin JUCE) para poder probarlo por separado.
 #pragma once
 #include <algorithm>
@@ -9,9 +10,10 @@
 
 namespace jelly
 {
-constexpr double kPi      = 3.14159265358979323846;
-constexpr double kMinF0   = 80.0;    // Hz, voz mas grave que se detecta
-constexpr double kMaxF0   = 1000.0;  // Hz, voz mas aguda que se detecta
+constexpr double kPi    = 3.14159265358979323846;
+constexpr double kMinF0 = 80.0;    // Hz, limite inferior absoluto (reserva de memoria)
+constexpr double kMaxF0 = 1000.0;  // Hz, voz mas aguda que se detecta
+constexpr float  kFormantMax = 8.0f; // semitonos de formante (mas alla se degrada el sonido)
 
 // Interpolacion cubica (Hermite) sobre un buffer circular
 inline double hermite (const float* buf, long long mask, double pos)
@@ -39,10 +41,7 @@ public:
         D    = std::max (1, (int) std::lround (fs / 12000.0));
         fsd  = fs / D;
         tauMinD = std::max (2, (int) std::floor (fsd / kMaxF0));
-        tauMaxD = (int) std::ceil (fsd / kMinF0) + 1;
-        Wd = 384;
-        Nd = Wd + tauMaxD + 2;
-        Wf = Wd * D;
+        setMinF0 (kMinF0); // peor caso: define el tamano de las reservas
 
         dec.assign ((size_t) Nd, 0.0);
         diff.assign ((size_t) tauMaxD + 2, 0.0);
@@ -58,6 +57,16 @@ public:
         mask = ringSize - 1;
         ring.assign ((size_t) ringSize, 0.0f);
         reset();
+    }
+
+    // Voz mas grave que se quiere detectar. Subirla acorta la ventana de analisis.
+    void setMinF0 (double f)
+    {
+        minF0   = std::max (f, kMinF0);
+        tauMaxD = (int) std::ceil (fsd / minF0) + 1;
+        Wd      = (int) std::ceil (2.75 * tauMaxD);
+        Nd      = Wd + tauMaxD + 2;
+        Wf      = Wd * D;
     }
 
     void reset()
@@ -169,12 +178,12 @@ public:
         }
 
         const double f0 = fs / tauF;
-        if (f0 < kMinF0 * 0.97 || f0 > kMaxF0 * 1.03) return 0.0;
+        if (f0 < minF0 * 0.97 || f0 > kMaxF0 * 1.03) return 0.0;
         return f0;
     }
 
 private:
-    double fs = 44100.0, fsd = 11025.0;
+    double fs = 44100.0, fsd = 11025.0, minF0 = kMinF0;
     int D = 4, tauMinD = 11, tauMaxD = 140, Wd = 384, Nd = 530, Wf = 1536;
     std::vector<double> dec, diff, cm, dF;
     std::vector<float> seg, ring;
@@ -195,15 +204,19 @@ public:
         bool  vibrato       = false;
         float vibRateHz     = 5.5f;
         float vibDepthCents = 35.0f;
+        float tuningHz      = 440.0f; // afinacion de referencia (A4)
+        float formantSemis  = 0.0f;   // -8..+8: cambia el timbre sin mover la nota
+        int   voiceRange    = 1;      // 0 grave (80 Hz), 1 media (110 Hz), 2 aguda (150 Hz)
     };
 
     void prepare (double sampleRate, int numChannels)
     {
         fs  = sampleRate;
         nCh = std::clamp (numChannels, 1, kMaxChannels);
-        latency = (int) std::ceil (2.1 * fs / kMinF0) + 16;
 
-        const int need = latency + (int) std::ceil (4.0 * fs / kMinF0) + 64;
+        // reservas para el peor caso (rango grave + formante alto)
+        const int latencyMax = (int) std::ceil (2.1 * fs / kMinF0) + 16;
+        const int need = latencyMax + (int) std::ceil (6.0 * fs / kMinF0) + 128;
         ringSize = 1;
         while (ringSize < need) ringSize <<= 1;
         mask = ringSize - 1;
@@ -217,7 +230,10 @@ public:
 
         det.prepare (fs);
         hopSamples = std::max (32, (int) std::lround (fs * 0.005));
+        levelAlpha = 1.0 - std::exp (-1.0 / (0.15 * fs));
+        gainAlpha  = 1.0 - std::exp (-1.0 / (0.05 * fs));
         applySettings();
+        applyRange();
         reset();
     }
 
@@ -237,6 +253,8 @@ public:
         histCount = 0; histPos = 0;
         hasTarget = false; target = 0;
         corr = 0.0; shiftSm = 0.0; vibPhase = 0.0;
+        eIn = eOut = 0.0; gComp = 1.0;
+        phi = std::exp2 ((double) std::clamp (settings.formantSemis, -kFormantMax, kFormantMax) / 12.0);
         curT0 = fs * 0.008;
     }
 
@@ -244,8 +262,14 @@ public:
 
     void setSettings (const Settings& s)
     {
+        const bool rangeChanged = (s.voiceRange != settings.voiceRange);
         settings = s;
         applySettings();
+        if (rangeChanged)
+        {
+            applyRange();
+            reset(); // cambia la latencia: se reinician los buffers
+        }
     }
 
     // Procesa en el lugar. channels[ch][n]
@@ -285,12 +309,28 @@ public:
 
             const size_t idx = (size_t) (j & mask);
             const float w = std::max (wsum[idx], 0.25f);
+            double sumIn = 0.0, sumOut = 0.0;
             for (int ch = 0; ch < chans; ++ch)
             {
-                channels[ch][n] = acc[ch][idx] / w;
+                const float y = acc[ch][idx] / w;
+                const float xin = inRing[ch][idx];
+                sumIn += (double) xin * xin;
+                sumOut += (double) y * y;
+                channels[ch][n] = y;
                 acc[ch][idx] = 0.0f;
             }
             wsum[idx] = 0.0f;
+
+            // Compensacion de nivel: el formante cambia la energia del espectro;
+            // igualamos el nivel de salida con el de entrada (lento, sin bombeo).
+            eIn  += levelAlpha * (sumIn  / chans - eIn);
+            eOut += levelAlpha * (sumOut / chans - eOut);
+            double gTarget = 1.0;
+            if (std::abs (settings.formantSemis) > 0.05f && eOut > 1e-10)
+                gTarget = std::clamp (std::sqrt (eIn / eOut), 0.35, 2.5);
+            gComp += gainAlpha * (gTarget - gComp);
+            if (std::abs (gComp - 1.0) > 1e-6)
+                for (int ch = 0; ch < chans; ++ch) channels[ch][n] *= (float) gComp;
         }
     }
 
@@ -309,6 +349,15 @@ private:
             for (int i = 0; i < 7; ++i) allowed[(root + minor[i]) % 12] = true;
         else
             for (int i = 0; i < 12; ++i) allowed[i] = true;
+    }
+
+    // La voz mas grave que se detecta define la latencia: ~2.1 periodos de esa voz
+    void applyRange()
+    {
+        static const double minF0Table[3] = { 80.0, 110.0, 150.0 };
+        fMin = minF0Table[std::clamp (settings.voiceRange, 0, 2)];
+        latency = (int) std::ceil (2.1 * fs / fMin) + 16;
+        det.setMinF0 (fMin);
     }
 
     bool isAllowed (int note) const { return allowed[((note % 12) + 12) % 12]; }
@@ -363,7 +412,9 @@ private:
         else
             f = hist[(histPos + kHist - 1) % kHist]; // aun pocas muestras: la mas reciente
 
-        const double midiIn = 69.0 + 12.0 * std::log2 (f / 440.0);
+        // A4 = tuningHz  (440 por defecto)
+        const double ref = (double) std::clamp (settings.tuningHz, 380.0f, 500.0f);
+        const double midiIn = 69.0 + 12.0 * std::log2 (f / ref);
 
         const int nearest = nearestAllowed (midiIn);
         if (hasTarget && target != nearest && isAllowed (target)
@@ -384,7 +435,7 @@ private:
                                : 1.0 - std::exp (-hopSec / ((double) settings.retuneMs * 0.001));
         corr += alpha * (desired - corr);
 
-        curT0 = std::clamp (fs / f, fs / kMaxF0, fs / kMinF0);
+        curT0 = std::clamp (fs / f, fs / kMaxF0, fs / fMin);
     }
 
     // Coloca un grano PSOLA centrado en sNext
@@ -392,7 +443,7 @@ private:
     {
         const double T0 = curT0;
 
-        // objetivo de desplazamiento (semitonos) = correccion + vibrato
+        // objetivo de desplazamiento de tono (semitonos) = correccion + vibrato
         double desired = 0.0;
         if (voiced)
         {
@@ -410,16 +461,23 @@ private:
         const double ratio = std::exp2 (shiftSm / 12.0);
         const double Ts = std::max (2.0, T0 / ratio);
 
+        // formante: escala el eje de tiempo DENTRO del grano (cambia el timbre,
+        // no la nota, porque la nota la fija el espaciado Ts de los granos).
+        // Suavizado para que mover la perilla no cause saltos.
+        const double phiTarget = std::exp2 ((double) std::clamp (settings.formantSemis, -kFormantMax, kFormantMax) / 12.0);
+        phi += (1.0 - std::exp (-(Ts / fs) / 0.02)) * (phiTarget - phi);
+        const double bias = std::max (0.0, phi - 1.0); // el grano lee mas adelante: nos atrasamos
+
         vibPhase += 2.0 * kPi * (double) settings.vibRateHz * (Ts / fs);
         if (vibPhase > 2.0 * kPi) vibPhase -= 2.0 * kPi;
 
         // centro de analisis: avanza en multiplos exactos del periodo
         const double e = sNext - cPrev;
-        const double nPer = std::max (0.0, std::floor (e / T0 + 0.1));
+        const double nPer = std::max (0.0, std::floor (e / T0 + 0.1 - bias));
         double c = cPrev + nPer * T0;
-        const double maxT0 = fs / kMinF0;
-        if (c < sNext - 2.0 * maxT0 || c > sNext + maxT0) c = sNext;
-        const double cMax = (double) (inIdx - 1) - T0 - 3.0;
+        const double maxT0 = fs / fMin;
+        if (c < sNext - (2.0 + bias) * maxT0 || c > sNext + maxT0) c = sNext - bias * T0;
+        const double cMax = (double) (inIdx - 1) - phi * T0 - 3.0;
         if (c > cMax) c = cMax;
 
         long long mMin = (long long) std::ceil (sNext - T0);
@@ -430,7 +488,7 @@ private:
         {
             const double dt = (double) m - sNext;
             const double w = 0.5 * (1.0 + std::cos (kPi * dt / T0));
-            const double pos = c + dt;
+            const double pos = c + dt * phi;
             const size_t idx = (size_t) (m & mask);
             for (int ch = 0; ch < chans; ++ch)
                 acc[ch][idx] += (float) (w * hermite (inRing[ch].data(), mask, pos));
@@ -442,7 +500,7 @@ private:
     }
 
     //--------------------------------------------------------------------------
-    double fs = 44100.0;
+    double fs = 44100.0, fMin = 110.0;
     int nCh = 2, latency = 0, hopSamples = 220, hopCount = 0;
     long long ringSize = 4096, mask = 4095, inIdx = 0;
 
@@ -457,7 +515,8 @@ private:
     static constexpr int kHist = 3;
     double hist[kHist] = {};
     int histCount = 0, histPos = 0;
-    double corr = 0.0, shiftSm = 0.0, vibPhase = 0.0;
+    double corr = 0.0, shiftSm = 0.0, vibPhase = 0.0, phi = 1.0;
+    double eIn = 0.0, eOut = 0.0, gComp = 1.0, levelAlpha = 0.0, gainAlpha = 0.0;
 };
 
 } // namespace jelly

@@ -45,15 +45,15 @@ private:
     JellyTuneProcessor& proc;
     juce::Image logo;
 
-    Knob retune, vibRate, vibDepth;
-    juce::ComboBox keyBox, scaleBox;
+    Knob retune, tuning, formant, vibRate, vibDepth;
+    juce::ComboBox keyBox, scaleBox, rangeBox;
     juce::TextButton sharpBtn { "SHARP  #" }, vibBtn { "VIBRATO" };
-    juce::Label keyLabel, scaleLabel;
+    juce::Label keyLabel, scaleLabel, rangeLabel;
 
-    juce::Rectangle<int> keyPanel, retunePanel, vibPanel;
+    juce::Rectangle<int> keyPanel, pitchPanel, vibPanel;
 
     // los attachments se destruyen primero (declarados al final)
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> keyAtt, scaleAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> keyAtt, scaleAtt, rangeAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> sharpAtt, vibAtt;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (JellyTuneEditor)

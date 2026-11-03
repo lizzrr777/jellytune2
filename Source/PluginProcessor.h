@@ -44,6 +44,11 @@ private:
     std::atomic<float>* vibratoParam  = nullptr; // 0/1
     std::atomic<float>* vibRateParam  = nullptr; // Hz
     std::atomic<float>* vibDepthParam = nullptr; // cents
+    std::atomic<float>* tuningParam   = nullptr; // Hz (A4)
+    std::atomic<float>* formantParam  = nullptr; // semitonos
+    std::atomic<float>* rangeParam    = nullptr; // 0 grave, 1 media, 2 aguda
+
+    jelly::JellyTuneDSP::Settings readSettings() const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (JellyTuneProcessor)
 };
